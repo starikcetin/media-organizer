@@ -53,7 +53,7 @@ def get_date_taken(file_path):
                 if date_time is not None:
                     return pendulum.from_format(date_time, "YYYY:MM:DD HH:mm:ss")
     except:
-        properties = propsys.SHGetPropertyStoreFromParsingName(str(file_path))
+        properties = propsys.SHGetPropertyStoreFromParsingName(str(Path(file_path).absolute()))
         dt = properties.GetValue(pscon.PKEY_Media_DateEncoded).GetValue()
 
         if dt is None:
