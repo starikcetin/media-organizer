@@ -2,100 +2,103 @@ from exif import Image
 from pathlib import Path
 import shutil
 import pendulum
-import os
-import pytz
 import datetime
 from win32com.propsys import propsys, pscon
+import traceback
 
 
-def uniquify(path):
-    filename, extension = os.path.splitext(path)
+def uniquify(path: Path) -> Path:
+    folder = path.parent
+    stem = path.stem
+    ext = path.suffix
     counter = 1
 
-    while os.path.exists(path):
-        path = filename + " (" + str(counter) + ")" + extension
+    while path.exists():
+        new_filename = stem + " (" + str(counter) + ")" + ext
+        path = folder.joinpath(new_filename)
         counter += 1
 
     return path
 
 
-def ensure_directories(directory):
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+def ensure_directories(directory: Path) -> None:
+    if not directory.exists():
+        directory.mkdir(parents=True, exist_ok=True)
 
 
-def handle_file(file, target_directory, shouldMove):
-    str_file = str(Path(file).resolve())
-    str_target_directory = str(Path(target_directory).resolve())
+def handle_file(file: Path, target_directory: Path, should_move: bool) -> Path:
+    if are_same_path(file.parent, target_directory):
+        return file
 
-    try:
-        str_result = shutil.copy(str_file, str_target_directory)
-    except shutil.SameFileError:
-        return str_file
-    else:
-        if shouldMove:
-            os.remove(file)
-        return str_result
-        
+    result = Path(shutil.copy2(str(file), str(target_directory)))
 
-def make_path(root, datetime):
-    directory_schema = datetime.format("YYYY-MM")
-    result = os.path.join(root, directory_schema)
-    return Path(result)
+    if should_move:
+        file.unlink()
+
+    return result
 
 
-def remove_prefix(text, prefix):
+def make_path(root: Path, date_time: datetime) -> Path:
+    directory_schema = date_time.format("YYYY-MM")
+    return root.joinpath(directory_schema)
+
+
+def remove_prefix(text: str, prefix: str) -> str:
     if text.startswith(prefix):
         return text[len(prefix):]
-    return text  # or whatever
+    return text
 
 
-def rename_file(file, datetime, file_format_mode):
-    folder = Path(file).parent
-    filename, extension = os.path.splitext(file)
+def rename_file(file: Path, date_time: datetime, file_format_mode: int) -> Path:
+    folder = file.parent
+    stem = file.stem
+    ext = file.suffix
 
-    datetime = datetime.format("YYYY-MM-DD HH-mm-ss")
+    date_time = date_time.format("YYYY-MM-DD HH-mm-ss")
 
     # 1: date only
     # 2: preserve filenames
     # 3: date + old filename, do not duplicate date and remove excess whitespace
     # 4: date + old filename, do not alter old filename
     if file_format_mode is 1:
-        new_filename = datetime + extension
-    
+        new_filename = date_time + ext
+
     elif file_format_mode is 2:
-        new_filename = filename + extension
-    
+        new_filename = stem + ext
+
     elif file_format_mode is 3:
-        filename = remove_prefix(filename.strip(), datetime).strip()
-        new_filename = datetime + " " + filename + extension
-    
+        stem = remove_prefix(stem.strip(), date_time).strip()
+        new_filename = date_time + " " + stem + ext
+
     elif file_format_mode is 4:
-        new_filename = datetime + " " + filename + extension
-    
+        new_filename = date_time + " " + stem + ext
+
     else:
         raise Exception("Filename format is invalid")
 
-    new_file = os.path.join(folder, new_filename)
+    new_file = folder.joinpath(new_filename)
     new_file = uniquify(new_file)
-    os.rename(file, new_file)
-    return new_file
+    file.rename(new_file)
+    return file
 
 
-def are_same_file(path1, path2):
-    return Path(path1).resolve().samefile(Path(path2).resolve())
+def are_same_path(path1: Path, path2: Path) -> bool:
+    if (not path1.exists()) | (not path2.exists()):
+        return path1.absolute() is path2.absolute()
+    else:
+        return path1.samefile(path2)
 
 
-def get_date_taken(file_path):
+def get_date_taken(file_path: Path) -> datetime:
     try:
-        with open(file_path, 'rb') as file:
+        with open(str(file_path), 'rb') as file:
             my_image = Image(file)
             if my_image.has_exif:
                 date_time = my_image.get('datetime_original')
                 if date_time is not None:
                     return pendulum.from_format(date_time, "YYYY:MM:DD HH:mm:ss")
-    except:
-        properties = propsys.SHGetPropertyStoreFromParsingName(str(Path(file_path).absolute()))
+    except AssertionError:
+        properties = propsys.SHGetPropertyStoreFromParsingName(str(file_path))
         dt = properties.GetValue(pscon.PKEY_Media_DateEncoded).GetValue()
 
         if dt is None:
@@ -108,61 +111,63 @@ def get_date_taken(file_path):
             dt = properties.GetValue(pscon.PKEY_RecordedTV_OriginalBroadcastDate).GetValue()
 
         if dt is not None:
-            if not isinstance(dt, datetime.datetime):
-                dt = datetime.datetime.fromtimestamp(int(dt))
+            return pendulum.instance(dt)
 
-            return pendulum.from_timestamp(dt.timestamp())
+    return None
 
 
-def process_file(file_path, target_root, shouldMove, file_format_mode):
+def process_file(file_path: Path, target_root: Path, should_move: bool, file_format_mode: int) -> None:
     try:
         date_taken = get_date_taken(file_path)
-        
+
         if date_taken is None:
             raise Exception("date_taken is None")
 
         print(date_taken)
         target_path = make_path(target_root, date_taken)
         ensure_directories(target_path)
-        new_file = handle_file(file_path, target_path, shouldMove)
+        new_file = handle_file(file_path, target_path, should_move)
         new_file_renamed = rename_file(new_file, date_taken, file_format_mode)
-        
-        if are_same_file(file_path, new_file_renamed):
+
+        if are_same_path(file_path, new_file_renamed):
             print("Destination and source are the same file.")
         else:
             print(new_file_renamed)
 
     except Exception as ex:
         print("Error while parsing the date taken: " + str(ex))
-        target_path = os.path.join(target_root, "Could not categorize")
+        target_path = target_root.joinpath("Could not categorize")
         ensure_directories(target_path)
-        new_file = handle_file(file_path, target_path, shouldMove)
+        new_file = handle_file(file_path, target_path, should_move)
 
-        if are_same_file(file_path, new_file):
+        if are_same_path(file_path, new_file):
             print("Destination and source are the same file.")
         else:
             print(new_file)
 
 
-def process_root(source_root, target_root, shouldMove, file_format_mode):
-    for filename in Path(source_root).glob('**/*'):
+def process_root(source_root: Path, target_root: Path, should_move: bool, file_format_mode: int) -> None:
+    for filename in source_root.glob('**/*'):
         if filename.is_dir():
             print("directory")
             continue
         print(filename)
-        process_file(filename, target_root, shouldMove, file_format_mode)
+        process_file(filename, target_root, should_move, file_format_mode)
         print()
 
 
 def main():
-    source_root = input("Source root: ")
-    target_root = input("Target root: ")
+    source_root = Path(input("Source root: "))
+    target_root = Path(input("Target root: "))
     move_or_copy = input("Move or copy? (m/c): ")
-    file_format_mode = int(input("Filename format of the new files? (1: date only / 2: preserve filenames / 3: date + old filename, do not duplicate date and remove excess whitespace / 4: date + old filename, do not alter old filename) (1/2/3/4): "))
+    file_format_mode = int(input(
+        "Filename format of the new files? (1: date only / 2: preserve filenames / 3: date + old filename, "
+        "do not duplicate date and remove excess whitespace / 4: date + old filename, do not alter old filename) ("
+        "1/2/3/4): "))
 
-    shouldMove = (move_or_copy is 'm') & (move_or_copy is not 'c')
+    should_move = (move_or_copy is 'm') & (move_or_copy is not 'c')
 
-    process_root(source_root, target_root, shouldMove, file_format_mode)
+    process_root(source_root, target_root, should_move, file_format_mode)
 
 
 if __name__ == "__main__":
